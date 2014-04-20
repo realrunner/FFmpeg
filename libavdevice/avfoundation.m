@@ -137,6 +137,93 @@ static void destroy_context(AVFContext* ctx)
     }
 }
 
+static int add_video_device(AVFormatContext *s, AVCaptureDevice *video_device)
+{
+    AVFContext *ctx = (AVFContext*)s->priv_data;
+    NSError *error  = nil;
+    AVCaptureDeviceInput* capture_dev_input = [[[AVCaptureDeviceInput alloc] initWithDevice:video_device error:&error] autorelease];
+
+    if (!capture_dev_input) {
+        av_log(s, AV_LOG_ERROR, "Failed to create AV capture input device: %s\n",
+               [[error localizedDescription] UTF8String]);
+        return 1;
+    }
+
+    if ([ctx->capture_session canAddInput:capture_dev_input]) {
+        [ctx->capture_session addInput:capture_dev_input];
+    } else {
+        av_log(s, AV_LOG_ERROR, "can't add video input to capture session\n");
+        return 1;
+    }
+
+    // Attaching output
+    // FIXME: Allow for a user defined pixel format
+    ctx->video_output = [[AVCaptureVideoDataOutput alloc] init];
+
+    if (!ctx->video_output) {
+        av_log(s, AV_LOG_ERROR, "Failed to init AV video output\n");
+        return 1;
+    }
+
+    NSNumber     *pixel_format = [NSNumber numberWithUnsignedInt:kCVPixelFormatType_24RGB];
+    NSDictionary *capture_dict = [NSDictionary dictionaryWithObject:pixel_format
+                                               forKey:(id)kCVPixelBufferPixelFormatTypeKey];
+
+    [ctx->video_output setVideoSettings:capture_dict];
+    [ctx->video_output setAlwaysDiscardsLateVideoFrames:YES];
+
+    ctx->avf_delegate = [[AVFFrameReceiver alloc] initWithContext:ctx];
+
+    dispatch_queue_t queue = dispatch_queue_create("avf_queue", NULL);
+    [ctx->video_output setSampleBufferDelegate:ctx->avf_delegate queue:queue];
+    dispatch_release(queue);
+
+    if ([ctx->capture_session canAddOutput:ctx->video_output]) {
+        [ctx->capture_session addOutput:ctx->video_output];
+    } else {
+        av_log(s, AV_LOG_ERROR, "adding video output to capture session failed\n");
+        return 1;
+    }
+
+    return 0;
+}
+
+static int get_video_config(AVFormatContext *s)
+{
+    AVFContext *ctx = (AVFContext*)s->priv_data;
+
+    // Take stream info from the first frame.
+    while (ctx->frames_captured < 1) {
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, YES);
+    }
+
+    lock_frames(ctx);
+
+    AVStream* stream = avformat_new_stream(s, NULL);
+
+    if (!stream) {
+        return 1;
+    }
+
+    avpriv_set_pts_info(stream, 64, 1, avf_time_base);
+
+    CVImageBufferRef image_buffer = CMSampleBufferGetImageBuffer(ctx->current_frame);
+    CGSize image_buffer_size      = CVImageBufferGetEncodedSize(image_buffer);
+
+    stream->codec->codec_id   = AV_CODEC_ID_RAWVIDEO;
+    stream->codec->codec_type = AVMEDIA_TYPE_VIDEO;
+    stream->codec->width      = (int)image_buffer_size.width;
+    stream->codec->height     = (int)image_buffer_size.height;
+    stream->codec->pix_fmt    = AV_PIX_FMT_RGB24;
+
+    CFRelease(ctx->current_frame);
+    ctx->current_frame = nil;
+
+    unlock_frames(ctx);
+
+    return 0;
+}
+
 static int avf_read_header(AVFormatContext *s)
 {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
@@ -210,87 +297,16 @@ static int avf_read_header(AVFormatContext *s)
     // Initialize capture session
     ctx->capture_session = [[AVCaptureSession alloc] init];
 
-    NSError *error = nil;
-    AVCaptureDeviceInput* capture_dev_input = [[[AVCaptureDeviceInput alloc] initWithDevice:video_device error:&error] autorelease];
-
-    if (!capture_dev_input) {
-        av_log(s, AV_LOG_ERROR, "Failed to create AV capture input device: %s\n",
-               [[error localizedDescription] UTF8String]);
-        goto fail;
-    }
-
-    if (!capture_dev_input) {
-        av_log(s, AV_LOG_ERROR, "Failed to add AV capture input device to session: %s\n",
-               [[error localizedDescription] UTF8String]);
-        goto fail;
-    }
-
-    if ([ctx->capture_session canAddInput:capture_dev_input]) {
-        [ctx->capture_session addInput:capture_dev_input];
-    } else {
-        av_log(s, AV_LOG_ERROR, "can't add video input to capture session\n");
-        goto fail;
-    }
-
-    // Attaching output
-    // FIXME: Allow for a user defined pixel format
-    ctx->video_output = [[AVCaptureVideoDataOutput alloc] init];
-
-    if (!ctx->video_output) {
-        av_log(s, AV_LOG_ERROR, "Failed to init AV video output\n");
-        goto fail;
-    }
-
-    NSNumber     *pixel_format = [NSNumber numberWithUnsignedInt:kCVPixelFormatType_24RGB];
-    NSDictionary *capture_dict = [NSDictionary dictionaryWithObject:pixel_format
-                                               forKey:(id)kCVPixelBufferPixelFormatTypeKey];
-
-    [ctx->video_output setVideoSettings:capture_dict];
-    [ctx->video_output setAlwaysDiscardsLateVideoFrames:YES];
-
-    ctx->avf_delegate = [[AVFFrameReceiver alloc] initWithContext:ctx];
-
-    dispatch_queue_t queue = dispatch_queue_create("avf_queue", NULL);
-    [ctx->video_output setSampleBufferDelegate:ctx->avf_delegate queue:queue];
-    dispatch_release(queue);
-
-    if ([ctx->capture_session canAddOutput:ctx->video_output]) {
-        [ctx->capture_session addOutput:ctx->video_output];
-    } else {
-        av_log(s, AV_LOG_ERROR, "can't add video output to capture session\n");
+    if (add_video_device(s, video_device)) {
         goto fail;
     }
 
     [ctx->capture_session startRunning];
 
-    // Take stream info from the first frame.
-    while (ctx->frames_captured < 1) {
-        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, YES);
-    }
-
-    lock_frames(ctx);
-
-    AVStream* stream = avformat_new_stream(s, NULL);
-
-    if (!stream) {
+    if (get_video_config(s)) {
         goto fail;
     }
 
-    avpriv_set_pts_info(stream, 64, 1, avf_time_base);
-
-    CVImageBufferRef image_buffer = CMSampleBufferGetImageBuffer(ctx->current_frame);
-    CGSize image_buffer_size      = CVImageBufferGetEncodedSize(image_buffer);
-
-    stream->codec->codec_id   = AV_CODEC_ID_RAWVIDEO;
-    stream->codec->codec_type = AVMEDIA_TYPE_VIDEO;
-    stream->codec->width      = (int)image_buffer_size.width;
-    stream->codec->height     = (int)image_buffer_size.height;
-    stream->codec->pix_fmt    = AV_PIX_FMT_RGB24;
-
-    CFRelease(ctx->current_frame);
-    ctx->current_frame = nil;
-
-    unlock_frames(ctx);
     [pool release];
     return 0;
 

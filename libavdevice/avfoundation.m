@@ -55,6 +55,7 @@ typedef struct
 
     int             list_devices;
     int             video_device_index;
+    int             video_stream_index;
 
     AVCaptureSession         *capture_session;
     AVCaptureVideoDataOutput *video_output;
@@ -205,6 +206,8 @@ static int get_video_config(AVFormatContext *s)
         return 1;
     }
 
+    ctx->video_stream_index = stream->index;
+
     avpriv_set_pts_info(stream, 64, 1, avf_time_base);
 
     CVImageBufferRef image_buffer = CMSampleBufferGetImageBuffer(ctx->current_frame);
@@ -333,7 +336,7 @@ static int avf_read_packet(AVFormatContext *s, AVPacket *pkt)
             pkt->pts = pkt->dts = av_rescale_q(av_gettime() - ctx->first_pts,
                                                AV_TIME_BASE_Q,
                                                avf_time_base_q);
-            pkt->stream_index  = 0;
+            pkt->stream_index  = ctx->video_stream_index;
             pkt->flags        |= AV_PKT_FLAG_KEY;
 
             CVPixelBufferLockBaseAddress(image_buffer, 0);

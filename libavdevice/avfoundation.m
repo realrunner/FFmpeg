@@ -191,7 +191,7 @@ static int avf_read_header(AVFormatContext *s)
             goto fail;
         }
     } else {
-        video_device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeMuxed];
+        video_device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
     }
 
     // Video capture device not found, looking for AVMediaTypeVideo

@@ -141,7 +141,7 @@ static void unlock_frames(AVFContext* ctx)
 
 /** AudioReciever class - delegate for AVCaptureSession
  */
- at interface AVFAudioReceiver : NSObject
+@interface AVFAudioReceiver : NSObject
 {
     AVFContext* _context;
 }
@@ -152,9 +152,9 @@ static void unlock_frames(AVFContext* ctx)
   didOutputSampleBuffer:(CMSampleBufferRef)audioFrame
          fromConnection:(AVCaptureConnection *)connection;
 
- at end
+@end
 
- at implementation AVFAudioReceiver
+@implementation AVFAudioReceiver
 
 - (id)initWithContext:(AVFContext*)context
 {
@@ -183,7 +183,7 @@ static void unlock_frames(AVFContext* ctx)
     ++_context->audio_frames_captured;
 }
 
- at end
+@end
 
 static void destroy_context(AVFContext* ctx)
 {
